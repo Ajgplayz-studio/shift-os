@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Shift OS</title>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
 <style>
   *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
   html,body{height:100%;overflow:hidden}
@@ -292,6 +295,22 @@
   .about{background:rgba(127,127,127,.1);border:1px solid var(--panel-border);border-radius:12px;padding:16px;
     font-size:13.5px;line-height:1.7;color:var(--text-dim)}
   .about b{color:var(--text)}
+  .signin-row{display:flex;align-items:center;gap:12px;padding:13px 14px;border:1px solid var(--panel-border);border-radius:12px;background:rgba(127,127,127,.08);cursor:pointer;font-family:inherit;color:var(--text);text-align:left;width:100%}
+  .signin-row:hover{background:rgba(127,127,127,.16)}
+  .signin-glyph{font-size:24px}
+  .signin-info{flex:1}
+  .signin-info b{font-size:14.5px;display:block}
+  .signin-info span{font-size:12.5px;color:var(--text-dim)}
+  .signin-form{display:flex;flex-direction:column;gap:12px}
+  .signin-form label{font-size:12px;letter-spacing:1px;color:var(--text-dim);font-weight:700}
+  .signin-form input{padding:11px 13px;border-radius:10px;border:1px solid var(--panel-border);background:rgba(127,127,127,.12);color:var(--text);font-size:15px;outline:none;font-family:inherit;width:100%}
+  .signin-form input:focus{border-color:var(--accent)}
+  .signin-err{min-height:18px;font-size:13px;color:#ef4444;font-weight:600}
+  .signin-tabs{display:flex;gap:8px}
+  .signin-tab{flex:1;padding:9px;border-radius:9px;border:1px solid var(--panel-border);background:rgba(127,127,127,.08);color:var(--text);font-family:inherit;font-size:13.5px;font-weight:600;cursor:pointer}
+  .signin-tab.on{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#04121f;border-color:transparent}
+  .signin-back{background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:13px;font-family:inherit;padding:0;text-align:left}
+  .signin-back:hover{color:var(--text)}
 
   @media (max-width:640px){
     #desktop{top:10px;right:8px}
@@ -375,6 +394,7 @@ function saveInstalled(list){
 function restoreInstalled(){
   getInstalled().forEach(id => {
     if(id === "prism" && !APPS.prism){ APPS.prism = PRISM_APP; ORDER.push("prism"); }
+    if(id === "ajgmail" && !APPS.ajgmail){ APPS.ajgmail = AJGMAIL_APP; ORDER.push("ajgmail"); }
   });
 }
 function installPrism(){
@@ -404,6 +424,188 @@ function startPrismInstall(btn){
       btn.textContent = "Installing… " + left + "s";
     }
   }, 1000);
+}
+function installAjgMail(){
+  if(APPS.ajgmail) return;
+  APPS.ajgmail = AJGMAIL_APP;
+  ORDER.push("ajgmail");
+  const list = getInstalled();
+  if(!list.includes("ajgmail")) list.push("ajgmail");
+  saveInstalled(list);
+  buildDesktop(); buildStartList(""); refreshTaskbar();
+  openApp("ajgmail");
+}
+function startAjgMailInstall(btn){
+  if(btn.disabled) return;
+  btn.disabled = true;
+  let left = 10;
+  btn.textContent = "Installing… " + left + "s";
+  const t = setInterval(() => {
+    left--;
+    if(left <= 0){
+      clearInterval(t);
+      installAjgMail();
+      btn.disabled = false;
+      btn.textContent = "Open";
+      btn.onclick = () => openApp("ajgmail");
+    } else {
+      btn.textContent = "Installing… " + left + "s";
+    }
+  }, 1000);
+}
+
+/* ---------- AJG Mail sign-in (optional, never gates the desktop) ---------- */
+const AJGMAIL_DOMAIN = "ajgmail.com";
+const SIGNIN_USER_KEY = "shift-user";
+const AJGMAIL_APP = {name:"AJG Mail", icon:"✉️", desc:"Your @ajgmail.com inbox.", render:renderAjgMail};
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyBgGpjMERhIjAExMjON-X9d_QsPDlwmaV8",
+  authDomain: "ajg-mail.firebaseapp.com",
+  databaseURL: "https://ajg-mail-default-rtdb.firebaseio.com",
+  projectId: "ajg-mail",
+  storageBucket: "ajg-mail.firebasestorage.app",
+  messagingSenderId: "650156860047",
+  appId: "1:650156860047:web:1a42b3fb2a5af4b04706fa",
+  measurementId: "G-B13TRYF2FL"
+};
+let ajgAuth = null, ajgDb = null, ajgUser = null, ajgUserEmail = null;
+let settingsView = "main";   /* "main" | "signin" */
+let signinMode = "login";    /* "login" | "create" */
+let signupProfile = null;
+
+function ajgLocalPart(raw){
+  let v = String(raw || "").trim().toLowerCase();
+  if(v.includes("@")){
+    const parts = v.split("@");
+    if(parts[1] !== AJGMAIL_DOMAIN) return null;
+    v = parts[0];
+  }
+  return v;
+}
+function ajgValidLocal(v){
+  return /^[a-z0-9][a-z0-9._]{2,23}$/.test(v) && !v.endsWith(".") && !v.includes("..");
+}
+function ajgAddressOf(local){ return local + "@" + AJGMAIL_DOMAIN; }
+function ajgDisplayName(local, name){
+  const n = String(name || "").trim();
+  if(n) return n;
+  return local.replace(/[._]+/g," ").replace(/\b\w/g, c => c.toUpperCase());
+}
+function ajgWelcomeMailBody(address, name){
+  return "Hi " + name + ",\n\nYour AJG Mail address is ready: " + address + "\n\nHit Compose to send your first message to another @ajgmail.com address. Star the important stuff, search from the top bar, and anything you delete lands in Trash first.\n\n— The AJG Mail Team";
+}
+async function ajgWriteProfile(uid, profile){
+  await ajgDb.ref("ajgmail/users/" + uid).set(profile);
+  const idx = ajgDb.ref("ajgmail/addresses/" + profile.local);
+  const snap = await idx.once("value");
+  if(!snap.exists()) await idx.set(uid);
+}
+function initAjgMail(){
+  if(ajgAuth) return true;
+  try{
+    if(typeof firebase === "undefined") return false;
+    if(!FIREBASE_CONFIG || !FIREBASE_CONFIG.apiKey) return false;
+    if(!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+    ajgAuth = firebase.auth();
+    ajgDb = firebase.database();
+    ajgAuth.onAuthStateChanged(user => {
+      ajgUser = user || null;
+      ajgUserEmail = user ? user.email : null;
+      try{
+        if(user) localStorage.setItem(SIGNIN_USER_KEY, user.email);
+        else localStorage.removeItem(SIGNIN_USER_KEY);
+      }catch(e){}
+      if(wins.settings) renderSettings(wins.settings.el.querySelector(".winbody"), "settings");
+    });
+    return true;
+  }catch(e){ return false; }
+}
+function ajgSigninError(msg){
+  const el = document.querySelector("#signin-err");
+  if(el) el.textContent = msg || "";
+}
+async function submitAjgSignin(){
+  ajgSigninError("");
+  if(!initAjgMail()){ ajgSigninError("Couldn't reach AJG Mail — check your connection and try again."); return; }
+  const q = s => { const el = document.querySelector(s); return el ? el.value : ""; };
+  if(signinMode === "login"){
+    const local = ajgLocalPart(q("#signin-email"));
+    const pw = q("#signin-password");
+    if(local === null || !ajgValidLocal(local)){ ajgSigninError("incorrect email or password"); return; }
+    try{
+      await ajgAuth.signInWithEmailAndPassword(ajgAddressOf(local), pw);
+    }catch(err){
+      ajgSigninError("incorrect email or password");
+    }
+    return;
+  }
+  const local = ajgLocalPart(q("#signin-local"));
+  const name = ajgDisplayName(local || "", q("#signin-name"));
+  const pw = q("#signin-password");
+  const pw2 = q("#signin-password2");
+  if(local === null || !ajgValidLocal(local)){ ajgSigninError("That address won't work — use 3–24 letters, numbers, dots or underscores."); return; }
+  if(pw.length < 6){ ajgSigninError("Password needs at least 6 characters."); return; }
+  if(pw !== pw2){ ajgSigninError("Those passwords don't match."); return; }
+  const address = ajgAddressOf(local);
+  signupProfile = { address, local, name, createdAt: Date.now() };
+  try{
+    const cred = await ajgAuth.createUserWithEmailAndPassword(address, pw);
+    await ajgWriteProfile(cred.user.uid, signupProfile);
+    await ajgDb.ref("ajgmail/mail/" + cred.user.uid).push({
+      owner: address, folder: "inbox",
+      from: "team@" + AJGMAIL_DOMAIN, fromName: "AJG Mail Team",
+      to: address, toName: name,
+      subject: "Welcome to AJG Mail ✉️",
+      body: ajgWelcomeMailBody(address, name),
+      time: Date.now(), read: false, starred: false
+    });
+    signupProfile = null;
+  }catch(err){
+    signupProfile = null;
+    const code = (err && err.code) || "";
+    if(code === "auth/email-already-in-use") ajgSigninError("That address is already taken. Try another name.");
+    else if(code === "auth/network-request-failed") ajgSigninError("Network problem — check your connection and try again.");
+    else ajgSigninError("Something went wrong. Try again.");
+  }
+}
+function signOutAjg(){
+  if(ajgAuth) ajgAuth.signOut();
+  else { ajgUser = null; ajgUserEmail = null; }
+}
+function renderSigninPanel(body){
+  if(ajgUser){
+    body.innerHTML =
+      '<div class="settings"><button class="signin-back" id="signin-back">← Back to Settings</button>'+
+      '<div><h3>SIGN IN OPTIONS</h3>'+
+      '<div class="about">Signed in to AJG Mail as<br><b>' + ajgUserEmail + '</b></div></div>'+
+      '<div><button class="store-btn" id="signin-out" style="background:rgba(127,127,127,.25);color:var(--text)">Sign out</button></div></div>';
+    body.querySelector("#signin-back").onclick = () => { settingsView = "main"; renderSettings(body); };
+    body.querySelector("#signin-out").onclick = () => signOutAjg();
+    return;
+  }
+  const loginFields =
+    '<label for="signin-email">AJG MAIL ADDRESS</label><input id="signin-email" type="text" placeholder="you@ajgmail.com" autocomplete="username">' +
+    '<label for="signin-password">PASSWORD</label><input id="signin-password" type="password" placeholder="Password" autocomplete="current-password">';
+  const createFields =
+    '<label for="signin-name">DISPLAY NAME</label><input id="signin-name" type="text" placeholder="Your name (optional)">' +
+    '<label for="signin-local">AJG MAIL ADDRESS</label><input id="signin-local" type="text" placeholder="pick-a-name">' +
+    '<label for="signin-password">PASSWORD</label><input id="signin-password" type="password" placeholder="At least 6 characters" autocomplete="new-password">' +
+    '<label for="signin-password2">CONFIRM PASSWORD</label><input id="signin-password2" type="password" placeholder="Repeat password" autocomplete="new-password">';
+  body.innerHTML =
+    '<div class="settings"><button class="signin-back" id="signin-back">← Back to Settings</button>'+
+    '<div><h3>SIGN IN OPTIONS</h3>'+
+    '<div class="signin-tabs"><button class="signin-tab' + (signinMode === "login" ? " on" : "") + '" id="tab-login">Sign in</button>' +
+    '<button class="signin-tab' + (signinMode === "create" ? " on" : "") + '" id="tab-create">Create account</button></div></div>'+
+    '<form class="signin-form" id="signin-form">' +
+    (signinMode === "login" ? loginFields : createFields) +
+    '<div class="signin-err" id="signin-err"></div>' +
+    '<button class="store-btn" type="submit">' + (signinMode === "login" ? "Sign in" : "Create account") + '</button></form>' +
+    '<p style="font-size:13px;color:var(--text-dim);line-height:1.6">Signing in is optional. Your theme, background and installed apps stay on this device either way.</p></div>';
+  body.querySelector("#signin-back").onclick = () => { settingsView = "main"; renderSettings(body); };
+  body.querySelector("#tab-login").onclick = () => { signinMode = "login"; renderSettings(body); };
+  body.querySelector("#tab-create").onclick = () => { signinMode = "create"; renderSettings(body); };
+  const form = body.querySelector("#signin-form");
+  form.addEventListener("submit", e => { e.preventDefault(); submitAjgSignin(); });
 }
 
 let zTop = 100, activeWin = null;
@@ -593,6 +795,7 @@ function openApp(id){
   }));
   dragify(el, el.querySelector(".titlebar"));
   resizeify(el, el.querySelector(".resize-handle"));
+  if(id === "settings") settingsView = "main";
   const body = el.querySelector(".winbody");
   if(a.render) a.render(body, id);
   focusWin(id);
@@ -642,28 +845,43 @@ function resizeify(el, handle){
 
 /* ================= apps ================= */
 function renderAppStore(body){
-  const installed = !!APPS.prism;
+  const prismInstalled = !!APPS.prism;
+  const mailInstalled = !!APPS.ajgmail;
   body.innerHTML =
     '<div class="store"><h2>App Store</h2>' +
     '<div class="store-item"><span class="store-glyph">💬</span>' +
     '<div class="store-info"><b>Prism</b><span>The official Prism chat app.</span></div>' +
-    '<button class="store-btn" id="install-prism">' + (installed ? "Open" : "Install") + '</button></div>' +
+    '<button class="store-btn" id="install-prism">' + (prismInstalled ? "Open" : "Install") + '</button></div>' +
+    '<div class="store-item" style="margin-top:12px"><span class="store-glyph">✉️</span>' +
+    '<div class="store-info"><b>AJG Mail</b><span>Your @ajgmail.com inbox.</span></div>' +
+    '<button class="store-btn" id="install-ajgmail">' + (mailInstalled ? "Open" : "Install") + '</button></div>' +
     '<p class="store-note">More apps coming soon.</p></div>';
-  const btn = body.querySelector("#install-prism");
-  if(installed) btn.onclick = () => openApp("prism");
-  else btn.onclick = () => startPrismInstall(btn);
+  const pBtn = body.querySelector("#install-prism");
+  if(prismInstalled) pBtn.onclick = () => openApp("prism");
+  else pBtn.onclick = () => startPrismInstall(pBtn);
+  const mBtn = body.querySelector("#install-ajgmail");
+  if(mailInstalled) mBtn.onclick = () => openApp("ajgmail");
+  else mBtn.onclick = () => startAjgMailInstall(mBtn);
 }
 function renderPrism(body){
   body.innerHTML = '<iframe src="Prism/" style="position:absolute;inset:0;width:100%;height:100%;border:0" title="Prism"></iframe>';
 }
+function renderAjgMail(body){
+  body.innerHTML = '<iframe src="AJGMail/" style="position:absolute;inset:0;width:100%;height:100%;border:0" title="AJG Mail"></iframe>';
+}
 
 function renderSettings(body){
+  if(settingsView === "signin"){ renderSigninPanel(body); return; }
   body.innerHTML =
     '<div class="settings"><div><h3>THEME</h3><div class="theme-cards" id="st-themes"></div></div>'+
     '<div><h3>BACKGROUND</h3><div class="bg-swatches" id="st-bg"></div>'+
     '<div class="bg-custom"><label for="st-bgcolor">Custom color</label>'+
     '<input type="color" id="st-bgcolor" value="' + (customColor || "#14b8a6") + '">' +
     (customColor ? '<span class="bg-custom-on">Using custom color</span>' : '') + '</div></div>'+
+    '<div><h3>SIGN IN OPTIONS</h3>' +
+    '<button class="signin-row" id="signin-ajgmail"><span class="signin-glyph">✉️</span>' +
+    '<span class="signin-info"><b>AJG Mail</b><span>' + (ajgUser ? "Signed in as " + ajgUserEmail : "Sign in with your @ajgmail.com account.") + '</span></span>' +
+    '<span>' + (ajgUser ? "✓" : "›") + '</span></button></div>' +
     '<div><h3>ABOUT</h3><div class="about"><b>' + OS_NAME + '</b> v' + OS_VERSION +
     '<br>A brand new browser OS, built from scratch.<br>One shell, four looks \u2014 pick a theme and the whole OS shifts.</div></div></div>';
   const box = body.querySelector("#st-themes");
@@ -688,6 +906,8 @@ function renderSettings(body){
   });
   const colorInput = body.querySelector("#st-bgcolor");
   colorInput.addEventListener("input", () => setCustomColor(colorInput.value));
+  const signinRow = body.querySelector("#signin-ajgmail");
+  if(signinRow) signinRow.onclick = () => { settingsView = "signin"; signinMode = "login"; renderSettings(body); };
 }
 
 /* ---------- boot ---------- */
@@ -696,6 +916,7 @@ document.getElementById("sm-osver").textContent = "Version " + OS_VERSION;
 document.getElementById("sm-foot").textContent = OS_NAME + " v" + OS_VERSION + " — built from scratch.";
 document.title = OS_NAME;
 restoreInstalled();
+try{ initAjgMail(); }catch(e){}
 buildDesktop(); buildStartList("");
 restoreBackground(); restoreTheme(); tick();
 let bp = 0;
