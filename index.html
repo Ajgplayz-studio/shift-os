@@ -241,6 +241,22 @@
   .soon h2{font-size:26px;font-weight:300;letter-spacing:5px}
   .soon p{color:var(--text-dim);font-size:14px;max-width:340px;line-height:1.6}
 
+  /* ---------- app: app store listing ---------- */
+  .store{padding:24px;max-width:560px}
+  .store h2{font-size:22px;font-weight:300;letter-spacing:4px;margin-bottom:18px}
+  .store-item{display:flex;align-items:center;gap:14px;padding:14px;border:1px solid var(--panel-border);
+    border-radius:12px;background:rgba(127,127,127,.08)}
+  .store-glyph{font-size:32px;width:48px;height:48px;display:flex;align-items:center;justify-content:center;
+    border-radius:12px;background:var(--panel);border:1px solid var(--panel-border)}
+  .store-info{flex:1;display:flex;flex-direction:column;gap:3px}
+  .store-info b{font-size:15px}
+  .store-info span{font-size:13px;color:var(--text-dim)}
+  .store-btn{padding:10px 20px;border-radius:10px;border:1px solid var(--panel-border);cursor:pointer;
+    font-weight:700;font-size:14px;font-family:inherit;color:#04121f;
+    background:linear-gradient(135deg,var(--accent),var(--accent2))}
+  .store-btn:disabled{opacity:.75;cursor:default}
+  .store-note{margin-top:16px;font-size:13px;color:var(--text-dim)}
+
   /* ---------- app: settings ---------- */
   .settings{padding:22px;display:flex;flex-direction:column;gap:24px;max-width:560px}
   .settings h3{font-size:12px;letter-spacing:2px;color:var(--text-dim);font-weight:700;margin-bottom:11px}
@@ -347,6 +363,48 @@ const APPS = {
   settings:  {name:"Settings",   icon:"⚙️", desc:"Themes, backgrounds, about.", render:renderSettings},
 };
 const ORDER = ["appstore","settings"];
+const INSTALLED_KEY = "shift-installed";
+const PRISM_APP = {name:"Prism", icon:"💬", desc:"The official Prism chat app.", render:renderPrism};
+function getInstalled(){
+  try{ const v = JSON.parse(localStorage.getItem(INSTALLED_KEY) || "[]"); return Array.isArray(v) ? v : []; }
+  catch(e){ return []; }
+}
+function saveInstalled(list){
+  try{ localStorage.setItem(INSTALLED_KEY, JSON.stringify(list)); }catch(e){}
+}
+function restoreInstalled(){
+  getInstalled().forEach(id => {
+    if(id === "prism" && !APPS.prism){ APPS.prism = PRISM_APP; ORDER.push("prism"); }
+  });
+}
+function installPrism(){
+  if(APPS.prism) return;
+  APPS.prism = PRISM_APP;
+  ORDER.push("prism");
+  const list = getInstalled();
+  if(!list.includes("prism")) list.push("prism");
+  saveInstalled(list);
+  buildDesktop(); buildStartList(""); refreshTaskbar();
+  openApp("prism");
+}
+function startPrismInstall(btn){
+  if(btn.disabled) return;
+  btn.disabled = true;
+  let left = 10;
+  btn.textContent = "Installing… " + left + "s";
+  const t = setInterval(() => {
+    left--;
+    if(left <= 0){
+      clearInterval(t);
+      installPrism();
+      btn.disabled = false;
+      btn.textContent = "Open";
+      btn.onclick = () => openApp("prism");
+    } else {
+      btn.textContent = "Installing… " + left + "s";
+    }
+  }, 1000);
+}
 
 let zTop = 100, activeWin = null;
 const wins = {};   /* id -> {el, minimized} */
@@ -378,6 +436,7 @@ function applyTheme(id){
   document.body.className = "theme-" + id;
   applyWallpaper();
   try{ localStorage.setItem(THEME_KEY, id); }catch(e){}
+  refreshTaskbar();
   if(wins.settings) renderSettings(wins.settings.el.querySelector(".winbody"), "settings");
 }
 function setBackground(cls){
@@ -481,13 +540,16 @@ document.addEventListener("keydown", e => { if(e.key === "Escape") startMenu.cla
 const taskApps = document.getElementById("task-apps");
 function refreshTaskbar(){
   taskApps.innerHTML = "";
-  Object.keys(wins).forEach(id => {
+  /* Mac dock shows every app; other themes show open windows only. */
+  const ids = currentTheme === "mac" ? ORDER.slice() : Object.keys(wins);
+  ids.forEach(id => {
     const w = wins[id];
     const b = document.createElement("button");
-    b.className = "task-app" + (activeWin === id ? " active" : "") + (w.minimized ? " minimized" : "");
+    b.className = "task-app" + (activeWin === id ? " active" : "") + (w && w.minimized ? " minimized" : "");
     b.innerHTML = '<span>'+APPS[id].icon+'</span><span class="task-app-lbl">'+APPS[id].name+'</span>';
     b.onclick = () => {
-      if(w.minimized) toggleMin(id);
+      if(!w) openApp(id);
+      else if(w.minimized) toggleMin(id);
       else if(activeWin === id) toggleMin(id);
       else focusWin(id);
     };
@@ -580,9 +642,19 @@ function resizeify(el, handle){
 
 /* ================= apps ================= */
 function renderAppStore(body){
+  const installed = !!APPS.prism;
   body.innerHTML =
-    '<div class="soon"><div class="shift-mark">🛍️</div>'+
-    '<h2>APP STORE</h2><p>Coming soon.<br>Apps for Shift OS will live here.</p></div>';
+    '<div class="store"><h2>App Store</h2>' +
+    '<div class="store-item"><span class="store-glyph">💬</span>' +
+    '<div class="store-info"><b>Prism</b><span>The official Prism chat app.</span></div>' +
+    '<button class="store-btn" id="install-prism">' + (installed ? "Open" : "Install") + '</button></div>' +
+    '<p class="store-note">More apps coming soon.</p></div>';
+  const btn = body.querySelector("#install-prism");
+  if(installed) btn.onclick = () => openApp("prism");
+  else btn.onclick = () => startPrismInstall(btn);
+}
+function renderPrism(body){
+  body.innerHTML = '<iframe src="Prism/" style="position:absolute;inset:0;width:100%;height:100%;border:0" title="Prism"></iframe>';
 }
 
 function renderSettings(body){
@@ -623,6 +695,7 @@ document.getElementById("sm-osname").textContent = OS_NAME;
 document.getElementById("sm-osver").textContent = "Version " + OS_VERSION;
 document.getElementById("sm-foot").textContent = OS_NAME + " v" + OS_VERSION + " — built from scratch.";
 document.title = OS_NAME;
+restoreInstalled();
 buildDesktop(); buildStartList("");
 restoreBackground(); restoreTheme(); tick();
 let bp = 0;
